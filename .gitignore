@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+results/
+results.txt
+data/paper/
+data/extensions/tutorial_runs/
+/reproduce/
+/IBM_experiment/color_plot_109q.pdf
+/IBM_experiment/params_100q_RC_mc*.json
+/IBM_experiment/main/*
+!/IBM_experiment/main/__init__.py
+!/IBM_experiment/main/tomography.py
+!/IBM_experiment/main/resampling.py

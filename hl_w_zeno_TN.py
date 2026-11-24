@@ -1,3 +1,11 @@
+"""Learn spin-chain Hamiltonians with Zeno kicks and local process tomography.
+
+TeNPy evolves the chain, tomography reconstructs two-qubit patches, and
+boundary-corrected overlapping field estimates are averaged. N is the chain
+length; N_QPT=2 is the patch size. Start with tutorial.ipynb or supply a JSON
+configuration through --config.
+"""
+
 import argparse
 import json
 import numpy as np
@@ -43,8 +51,10 @@ def print_matrix(matrix, precision=1e-10):
 ###############################################################################################################
 
 def LocalProduct(Psi, Operators):
-    """
-    Calculate the product (A1xA2x...xAn)|psi>
+    """Apply sitewise operators to Psi in place and return the MPS.
+
+    Operators contains one TeNPy operator name or object per physical site;
+    'Id' entries are skipped.
     """
     for i, op in enumerate(Operators):
         if op != 'Id':
@@ -56,8 +66,10 @@ def LocalProduct(Psi, Operators):
 ###############################################################################################################
 
 def generate_U_kick_from_list(psi_0_list):
-    """
-    Generate the kick operator from the full state structure.
+    """Expand a compact layout into one kick operator per physical site.
+
+    '0' gives a Z kick, 'F' gives two patch identities, and 'L' gives one
+    identity for a remaining edge qubit.
     """
     # put a Z in correspondance of the "0" and identity otherwise
     kick_dict = {'0': "Sigmaz", 'F': "Id", 'L': "Id"}
@@ -71,9 +83,11 @@ def generate_U_kick_from_list(psi_0_list):
 
 
 def get_qpt_keys(n, complete_set=False, exte=False):
-    """
-    Generate the measurement keys for quantum process tomography. This 
-    is meant for 2 qubits. 
+    """Return ordered product-state labels or measurement-axis strings.
+
+    The default single-site labels are Z0, Z1, X0, Y0. complete_set=True
+    uses all six Pauli eigenstates. exte=True retains outcome digits;
+    otherwise they are removed and repeated axis strings are deduplicated.
     """
     sq_states = []
     # make single qubit states, then tensor them 
@@ -121,8 +135,13 @@ measurement_rotations = {
 }
 
 def get_probabilities(full_state_list, psi, meas_keys, N_shots=None):
-    """ 
-    Calculate the probabilities of measuring the given states in the specified measurement bases.
+    """Return probabilities indexed by patch label and projector label.
+
+    full_state_list locates the two-site 'F' patches. meas_keys specifies
+    the measured product projectors. Basis rotations act on copies of psi.
+    N_shots sets the samples per independent binary probability test;
+    None returns exact probabilities. Patch labels concatenate site indices,
+    for example '01'; projector labels specify axes and outcomes, e.g. 'Z0X1'.
     """
     basis_keys = [key.replace('0', '').replace('1', '') for key in meas_keys]
     basis_keys = list(dict.fromkeys(basis_keys))
@@ -156,7 +175,7 @@ def get_probabilities(full_state_list, psi, meas_keys, N_shots=None):
             p10 = rho_q0q1[2, 2].real
             p11 = rho_q0q1[3, 3].real
             if N_shots is not None:
-                # simulate N_shots measurements
+                # Sample each binary projector test.
                 p00 = np.random.binomial(N_shots, p00) / N_shots
                 p01 = np.random.binomial(N_shots, p01) / N_shots
                 p10 = np.random.binomial(N_shots, p10) / N_shots
@@ -169,8 +188,11 @@ def get_probabilities(full_state_list, psi, meas_keys, N_shots=None):
 
 
 def generate_psi0_list(N, reshaping_step):
-    """
-    Generate the list of initial states for the given reshaping step.
+    """Create a translated patch layout for N sites of an open chain.
+
+    '0' is one separator in |0>, 'F' is a two-qubit patch, and 'L' is a
+    remaining edge qubit in |+y>. reshaping_step selects translation 0, 1,
+    or 2; count 'F' twice when expanding to physical site indices.
     """
     psi_0_list = []
     flag = True if reshaping_step == 0 or reshaping_step == 2 else False
@@ -195,8 +217,12 @@ def generate_psi0_list(N, reshaping_step):
 
 
 def get_fiducial_states(n, complete_set=False):
-    """
-    Generate fiducial product states for tomography
+    """Return product preparations as lists of local amplitude arrays.
+
+    The single-qubit order is |0>, |1>, |+x>, |+y>, or
+    |0>, |1>, |+x>, |-x>, |+y>, |-y> with complete_set=True.
+    Each preparation contains n length-two arrays; products follow
+    itertools.product order, with the first site varying slowest.
     """
     sq_states = []
     # Define single-qubit states as lists of amplitudes
@@ -215,7 +241,7 @@ def get_fiducial_states(n, complete_set=False):
         psi_R = [1/np.sqrt(2), -1.j/np.sqrt(2)]
         sq_states.append(psi_R)
 
-    # Build all product states as MPS
+    # Build local amplitudes for each product preparation.
     fiducial_states = []
     for state_combination in product(sq_states, repeat=n):
         # Each site gets its local state as a numpy array
@@ -226,8 +252,10 @@ def get_fiducial_states(n, complete_set=False):
 
 
 def generate_psi0_fromlist(psi_0_list, fiducial_state, N):
-    """
-    Generate the initial state from the given list of states.
+    """Build an N-site finite MPS from a layout and a shared patch fiducial.
+
+    Replace 'F' with the two-site fiducial_state, '0' with |0>, and 'L'
+    with |+y>. N must equal the expanded layout length.
     """
     states_dict = {'F': fiducial_state, 'L': np.array([1/np.sqrt(2), 1.j/np.sqrt(2)], dtype=np.complex128), '0':np.array([1, 0], dtype=np.complex128)}
     psi_0 = [states_dict[p] for p in psi_0_list]
@@ -238,9 +266,10 @@ def generate_psi0_fromlist(psi_0_list, fiducial_state, N):
 
 
 def choi_reshape(M):
-    """
-    Reshape the matrix M that is the tensor product of two 2**n x 2**n matrices
-    into a matrix that corresponds to the dot product of the two vectorized matrices.
+    """Reshuffle a two-qubit process matrix into Choi ordering.
+
+    Input and output have shape (16, 16), using row-major vectorization.
+    The Choi matrix is unnormalized: an ideal unitary has trace four.
     """
     n = int(np.log2(M.shape[0]))
     M_reshaped = M.reshape(n,n,n,n)
@@ -250,8 +279,14 @@ def choi_reshape(M):
 
 
 def reconstruct_H(N, T, fiducial_states, probabilities):
-    """
-    Reconstruct the Hamiltonian from the given probabilities.
+    """Recover a patch generator by linear inversion and polar projection.
+
+    N is the patch size and T the evolution time. probabilities has
+    measurement projectors on rows and input preparations on columns;
+    the main two-qubit design uses shape (16, 16).
+    Reshape the largest-magnitude Choi eigenvector and project it to a
+    unitary. Fix positive real trace, then compute logm(U_rec)/(-1j*T).
+    Return (H_rec, G_choi), where G_choi is the raw Choi matrix.
     """
     # build matrices of states and povms
     rho_vectors = [DensityMatrix(fiducial_state).dm.flatten() for fiducial_state in fiducial_states]
@@ -265,7 +300,7 @@ def reconstruct_H(N, T, fiducial_states, probabilities):
     # reshape it
     G_choi = choi_reshape(G)
 
-    # build the U from probabilities as the rank-1 approximation of G_choi
+    # Recover a unitary estimate from the selected Choi eigenvector.
     evals, evecs = np.linalg.eigh(G_choi)
     idx = np.argmax(np.abs(evals))
     lambda_ = evals[idx]
@@ -278,6 +313,11 @@ def reconstruct_H(N, T, fiducial_states, probabilities):
     U_rec = complex2unitary(U_rec)
     if not np.allclose(np.eye(2**N), U_rec @ U_rec.conj().T):
         print("Warning: U_rec is not unitary")
+    # Choose positive real trace before taking the logarithm.
+    trace_U = np.trace(U_rec)
+    if abs(trace_U) <= U_rec.shape[0] * np.finfo(float).eps:
+        raise ValueError("Unitary trace is too small to fix its global phase.")
+    U_rec = U_rec * (np.conj(trace_U) / abs(trace_U))
     H_rec =  scipy.linalg.logm(U_rec) / (-1.j *T)
 
     return H_rec, G_choi
@@ -286,6 +326,10 @@ def reconstruct_H(N, T, fiducial_states, probabilities):
 from scipy.linalg import inv, sqrtm
 def complex2unitary( Z ):
 
+    """Return Z @ inv(sqrtm(Z.conj().T @ Z)) for a nonsingular matrix.
+
+    A three-dimensional input is a batch whose entries are updated in place.
+    """
     if Z.ndim == 3:
         for k, z in enumerate(Z):
             Z[k] = z @ inv( sqrtm( z.T.conj()@z ) )
@@ -295,9 +339,10 @@ def complex2unitary( Z ):
     return Z 
 
 def get_fiducial_states_arr(n, complete_set=False):
-    """
-    Generate fiducial states for tomography as array, useful to get 
-    the coefficients.
+    """Return dense vectors for the product preparations.
+
+    Ordering matches get_fiducial_states. The list has 4**n vectors of
+    length 2**n, or 6**n vectors with complete_set=True.
     """
     sq_states = []
     # make single qubit states, then tensor them 
@@ -330,9 +375,13 @@ def get_fiducial_states_arr(n, complete_set=False):
 ###############################################################################################################
 
 class CustomSpinModel(CouplingModel, NearestNeighborModel):
-    """
-    Custom spin model that combines CouplingModel and NearestNeighborModel from TeNPy.
-    Allows flexible addition of onsite and coupling terms.
+    """TeNPy model of on-site and nearest-neighbor Pauli interactions.
+
+    General coefficients are site-major: X, Y, Z fields followed by bonds
+    XX, XY, XZ, YX, YY, YZ, ZX, ZY, ZZ. coeffs supplies their values;
+    otherwise seeded uniform draws use h_strength and J_strength.
+    ising_like selects fixed Z fields of 1/8 and XX bonds of 1/16.
+    coeffs_vec and H_bond provide the reference coefficients and TEBD model.
     """
     def __init__(self, lattice, h_strength=1.0, J_strength=1.0, seed=None, coeffs=None, ising_like=False):
         CouplingModel.__init__(self, lattice)
@@ -353,6 +402,7 @@ class CustomSpinModel(CouplingModel, NearestNeighborModel):
         
     def _build_ising_terms(self):
         # 1/8 Z + 1/16 XX
+        """Add the fixed Z fields and XX bonds in interleaved chain order."""
         for i in range(self.N):
             self.add_onsite_term(1/8, i, 'Sigmaz')
             self.str_ham += f"1/8 * Sigmaz_{i} + "
@@ -368,6 +418,7 @@ class CustomSpinModel(CouplingModel, NearestNeighborModel):
         self.str_ham = self.str_ham[:-3]  # Remove the last ' + '
 
     def _build_terms(self):
+        """Add the general Pauli terms from coeffs or seeded uniform draws."""
         counter = 0
         for i in range(self.N):
             for op_str in ['Sigmax', 'Sigmay', 'Sigmaz']:
@@ -412,8 +463,11 @@ class CustomSpinModel(CouplingModel, NearestNeighborModel):
 ###############################################################################################################
 
 class Hamiltonian:
-    """
-    Class representing a Hamiltonian.
+    """Dense chain Hamiltonian and local Pauli-operator reference.
+
+    Generate random Pauli terms or the fixed Z+XX model, in the same order
+    as CustomSpinModel; matrix supplies H directly. seed sets the NumPy
+    random generator. Reconstruction uses this class on the small patch.
     """
     def __init__(self, N, matrix=None, seed=None, ising_like=False):
 
@@ -432,9 +486,7 @@ class Hamiltonian:
             else:
                 self.generate_random_hamiltonian()
     def generate_ising_terms(self):
-        """
-        Generate an Ising-like Hamiltonian.
-        """
+        """Add Z fields of 1/8 and XX bonds of 1/16 in field/bond order."""
         
         for i in range(self.N):
             operator = self.select_operator('Z', i)
@@ -458,9 +510,7 @@ class Hamiltonian:
         self.str_ham = self.str_ham[:-3]
 
     def generate_random_hamiltonian(self):
-        """
-        Generate a random Hamiltonian.
-        """
+        """Add site and bond Pauli terms with coefficients uniform on [-1, 1]."""
         
         for i in range(self.N):
             for op_str in ['X', 'Y', 'Z']:
@@ -489,9 +539,7 @@ class Hamiltonian:
         self.str_ham = self.str_ham[:-3]
     
     def select_operator(self, string, idx):
-        """
-        Select the operator based on the given string.
-        """
+        """Return embedded X, Y, Z at idx, or the full identity for I."""
         if string == 'X':
             return self.h_space.X[idx]
         elif string == 'Y':
@@ -505,8 +553,12 @@ class Hamiltonian:
         
 
 def hamiltonian_learning_w_QPT(N, T, fiducial_states, probabilities, return_G=False, ising_like=False):
-    """
-    Perform Hamiltonian learning with QPT.
+    """Extract patch coefficients as real(trace(P @ H_rec))/2**N.
+
+    N is the local patch size. The two-qubit vector contains left X,Y,Z
+    fields, bonds XX,XY,XZ,YX,YY,YZ,ZX,ZY,ZZ, and right X,Y,Z fields.
+    ising_like returns [Z_left, XX, Z_right]. return_G=True also returns
+    the raw Choi matrix. The identity coefficient is omitted.
     """
     H_rec, G_choi = reconstruct_H(N, T, fiducial_states, probabilities)
     H_trial = Hamiltonian(N, ising_like=ising_like)
@@ -520,8 +572,15 @@ def hamiltonian_learning_w_QPT(N, T, fiducial_states, probabilities, return_G=Fa
     
 
 def combine_coeffs(coeffs_dict, ising_like=False):
-    """
-    Combine the coefficients from different patches.
+    """Correct overlapping field estimates, then take their arithmetic mean.
+
+    coeffs_dict maps at least two adjacent-bond labels to patch vectors
+    in hamiltonian_learning_w_QPT order. For each interior site, subtract
+    ZX,ZY,ZZ from the previous bond from the current left-field estimate,
+    and XZ,YZ,ZZ from the current bond from the previous right-field
+    estimate. Average the two corrected vectors.
+    For Z+XX, average the overlapping fields directly. Endpoint fields
+    and bonds are retained once, in the original coefficient ordering.
     """
     def key_to_tuple(k):
         # split key in half
@@ -541,8 +600,10 @@ def combine_coeffs(coeffs_dict, ising_like=False):
         # For Ising-like Hamiltonian
         combined.extend(patch0)
         for key in sorted_keys[1:]:
-            patch = coeffs_dict[key][1:]
-            combined.extend(patch)
+            patch = coeffs_dict[key]
+            # Average overlapping Z fields.
+            combined[-1] = (combined[-1] + patch[0]) / 2
+            combined.extend(patch[1:])
         return combined
     combined.extend(patch0[:12])
     
@@ -553,7 +614,10 @@ def combine_coeffs(coeffs_dict, ising_like=False):
         curr_patch = coeffs_dict[curr_key]
         prev_patch = coeffs_dict[prev_key]
         
-        adjusted = list(np.array(curr_patch[:3]) - np.array(prev_patch[9:12]))
+        # Remove each patch's separator-induced field shift.
+        from_right_patch = np.array(curr_patch[:3]) - np.array(prev_patch[9:12])
+        from_left_patch = np.array(prev_patch[12:15]) - np.array(curr_patch)[[5, 8, 11]]
+        adjusted = list((from_left_patch + from_right_patch) / 2)
         combined.extend(adjusted)
         
         if i < num_patches - 1:
@@ -568,17 +632,32 @@ def combine_coeffs(coeffs_dict, ising_like=False):
 ###############################################################################################################
 
 def main():
+    """Run the chain simulation with CLI settings overridden by JSON values.
+
+    N is the chain size, N_QPT=2 the patch size, and T the duration split
+    into an integer n_steps. Free intervals use fourth-order TEBD with
+    chi_max=16 and svd_min=1e-12, alternating with separator Z kicks.
+    Reconstruct patches, correct boundary shifts, and average overlapping
+    fields. save writes results.txt; plot displays coefficient differences.
+    """
+    def parse_bool(value):
+        """Read an explicit true or false command-line value."""
+        value = value.strip().lower()
+        if value not in ("true", "false"):
+            raise argparse.ArgumentTypeError("Use true or false.")
+        return value == "true"
+
     parser = argparse.ArgumentParser(description="Run Zeno script with specified parameters.")
     parser.add_argument('--N', type=int, default=7, help='Number of spins')
     parser.add_argument('--N_QPT', type=int, default=2, help='Number of qubits for QPT')
     parser.add_argument('--T', type=float, default=1e-2, help='Total evolution time')
-    parser.add_argument('--n_steps', type=float, default=1e-5, help='Number of steps for evolution')
+    parser.add_argument('--n_steps', type=int, default=10, help='Number of evolution segments and kick rounds')
     parser.add_argument('--N_shots', type=int, default=100000, help='Number of shots for simulation')
-    parser.add_argument('--plot', type=bool, default=True, help='Flag to plot the results')
-    parser.add_argument('--save', type=bool, default=False, help='Flag to save the results to a text file')
+    parser.add_argument('--plot', type=parse_bool, default=True, help='Flag to plot the results')
+    parser.add_argument('--save', type=parse_bool, default=False, help='Flag to save the results to a text file')
     parser.add_argument('--seed', type=int, default=43, help='Random seed')
     parser.add_argument('--config', type=str, help='Path to config file')
-    parser.add_argument('--ising_like', type=bool, default=False, help='Use Ising-like Hamiltonian')
+    parser.add_argument('--ising_like', type=parse_bool, default=False, help='Use Ising-like Hamiltonian')
     args = parser.parse_args()
 
     if args.config:
@@ -586,6 +665,9 @@ def main():
             config = json.load(f)
         for key, value in config.items():
             setattr(args, key, value)
+
+    if isinstance(args.n_steps, bool) or not isinstance(args.n_steps, int) or args.n_steps < 1:
+        parser.error("n_steps must be a positive integer.")
 
     N = args.N
     N_QPT = args.N_QPT
@@ -613,6 +695,7 @@ def main():
     coeffs_vec = np.random.uniform(-1, 1, size=(12*N-9))
     spin_model = CustomSpinModel(lattice, h_strength=1.0, J_strength=1.0, seed=seed, coeffs=coeffs_vec, ising_like=ising_like)
 
+    # Evolve each free interval with TEBD.
     tebd_params_ev = {
         'N_steps': 1,
         'dt': dt,
@@ -633,7 +716,7 @@ def main():
                 eng = tebd.TEBDEngine(psi_zeno, spin_model, tebd_params_ev)
                 eng.run()
                 psi_zeno = LocalProduct(psi_zeno, U_kick)  
-            # apply U_kick dagger n_steps times
+            # Restore the control frame.
             U_kick_dagger = U_kick # for Z kick it is true
             for _ in range(n_steps):
                 psi_zeno = LocalProduct(psi_zeno, U_kick_dagger)
@@ -651,6 +734,7 @@ def main():
         coeffs, choi = hamiltonian_learning_w_QPT(N_QPT, T, fiducial_states_arr, probabilities[key], return_G=True, ising_like=ising_like)
         coeffs_rec[key] = coeffs
         choi_matrices[key] = choi
+    # Correct boundary shifts, then average overlapping fields.
     coeffs_rec_tot = combine_coeffs(coeffs_rec, ising_like)
     coeffs_vec = spin_model.coeffs_vec
     if save:
